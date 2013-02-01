@@ -18,6 +18,8 @@ using System.Text;
 using System.Threading;
 using System.Text.RegularExpressions;
 using System.Diagnostics;
+using NHibernate.AdoNet;
+using System.Data.SqlClient;
 
 
 namespace Dapper
@@ -679,31 +681,45 @@ this IDbConnection cnn, string sql, dynamic param = null, IDbTransaction transac
             CacheInfo info = null;
             if (multiExec != null && !(multiExec is string))
             {
-                bool isFirst = true;
-                int total = 0;
-                using (var cmd = SetupCommand(cnn, transaction, sql, null, null, commandTimeout, commandType))
+                using (var set = new SqlClientSqlCommandSet())
                 {
-
-                    string masterSql = null;
-                    foreach (var obj in multiExec)
+                    set.Connection = cnn as SqlConnection;
+                    set.Transaction = transaction as SqlTransaction;
+                    bool isFirst = true;
+                    int total = 0;
+                    using (var cmd = SetupCommand(cnn, transaction, sql, null, null, commandTimeout, commandType))
                     {
-                        if (isFirst)
+                        string masterSql = null;
+                        foreach (var obj in multiExec)
                         {
-                            masterSql = cmd.CommandText;
+                            if (isFirst)
+                            {
+                                masterSql = cmd.CommandText;
+                                identity = new Identity(sql, cmd.CommandType, cnn, null, obj.GetType(), null);
+                                info = GetCacheInfo(identity);
+                            }
+                            else
+                            {
+                                cmd.CommandText = masterSql; // because we do magic replaces on "in" etc
+                                cmd.Parameters.Clear(); // current code is Add-tastic
+                            }
+
+                            //if (isFirst)
+                            //{
+                                info.ParamReader(cmd, obj);
+                            //    cmd.Prepare();
+                            //}
+
                             isFirst = false;
-                            identity = new Identity(sql, cmd.CommandType, cnn, null, obj.GetType(), null);
-                            info = GetCacheInfo(identity);
+                            //total += cmd.ExecuteNonQuery();
+                            set.Append(cmd as SqlCommand);
                         }
-                        else
-                        {
-                            cmd.CommandText = masterSql; // because we do magic replaces on "in" etc
-                            cmd.Parameters.Clear(); // current code is Add-tastic
-                        }
-                        info.ParamReader(cmd, obj);
-                        total += cmd.ExecuteNonQuery();
+
+                        total = set.ExecuteNonQuery();
                     }
+
+                    return total;
                 }
-                return total;
             }
 
             // nice and simple
